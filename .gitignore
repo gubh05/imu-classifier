@@ -1,0 +1,11 @@
+data/
+outputs/
+__pycache__/
+*.pt
+*.pkl
+.env
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
