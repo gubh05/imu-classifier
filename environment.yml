@@ -129,6 +129,7 @@ dependencies:
   - python-tzdata=2026.1=pyhd8ed1ab_0
   - python_abi=3.11=8_cp311
   - pytorch=2.10.0=cuda130_mkl_py311_hc72d65c_303
+  - pyyaml=6.0.3=py311h3f79411_1
   - qhull=2020.2=hc790b64_5
   - qt6-main=6.11.0=pl5321hfcac499_4
   - requests=2.33.1=pyhcf101f3_0
@@ -160,6 +161,7 @@ dependencies:
   - win_inet_pton=1.1.0=pyh7428d3b_8
   - xorg-libxau=1.0.12=hba3369d_1
   - xorg-libxdmcp=1.1.5=hba3369d_1
+  - yaml=0.2.5=h6a83c73_3
   - zlib-ng=2.3.3=h0261ad2_1
   - zstd=1.5.7=h534d264_6
   - pip:
