@@ -6,6 +6,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import torch
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
 
 from src.features.feature_extractor import FeatureExtractor
 from src.ingestion.data_loader import UCIHARDataLoader
@@ -15,6 +16,7 @@ from src.models.rf_baseline import RFClassifier
 from src.pipeline.preprocessor import SignalPreprocessor
 from src.pipeline.sensor_pipeline import SensorPipeline
 from src.utils.config import Config
+from src.utils.experiment_logger import ExperimentLogger
 from src.utils.visualization import (
     plot_confusion_matrices,
     plot_feature_importance,
@@ -25,6 +27,16 @@ from src.utils.visualization import (
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def _eval_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+    """Return accuracy, f1_macro, f1_per_class, confusion_matrix."""
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "f1_macro": float(f1_score(y_true, y_pred, average="macro")),
+        "f1_per_class": f1_score(y_true, y_pred, average=None).tolist(),
+        "confusion_matrix": confusion_matrix(y_true, y_pred).tolist(),
+    }
 
 
 def main() -> None:
@@ -88,35 +100,38 @@ def main() -> None:
 
     # --- Random Forest ---
     print("\n[4/6] Training Random Forest …")
+    rf_exp = ExperimentLogger(run_name="rf", config=cfg)
     t0 = time.time()
     rf_pipe = SensorPipeline(preprocessor, extractor, RFClassifier())
-    # preprocessor already fitted — fit() re-uses it via fit_transform (re-fit is harmless
-    # but to be safe we train only the model on already-processed features)
     rf_model = RFClassifier()
     rf_model.fit(X_train_feat, y_train)
     rf_elapsed = time.time() - t0
 
-    from sklearn.metrics import accuracy_score, f1_score
     rf_preds = rf_model.predict(X_test_feat)
-    rf_acc = accuracy_score(y_test, rf_preds)
-    rf_f1 = f1_score(y_test, rf_preds, average="weighted")
-    from sklearn.metrics import confusion_matrix
-    confusion_matrices["RF"] = confusion_matrix(y_test, rf_preds)
+    rf_metrics = _eval_metrics(y_test, rf_preds)
+    rf_acc = rf_metrics["accuracy"]
+    rf_f1 = float(f1_score(y_test, rf_preds, average="weighted"))
+    confusion_matrices["RF"] = np.array(rf_metrics["confusion_matrix"])
     results["RF"] = {"accuracy": rf_acc, "f1": rf_f1, "time_s": rf_elapsed}
 
-    # Save RF model
     joblib.dump(rf_model, cfg.output_dir / "rf_model.pkl")
     print(f"      RF done in {rf_elapsed:.1f}s — acc={rf_acc:.4f}  f1={rf_f1:.4f}")
 
-    # Feature importance plot (RF only)
     plot_feature_importance(
         rf_model.feature_importances_,
         extractor.feature_names(),
         save_path=plots_dir / "feature_importance.png",
     )
 
+    rf_exp.log_final_metrics(rf_metrics)
+    rf_exp.log_artefact("outputs/rf_model.pkl")
+    rf_exp.log_artefact("outputs/plots/feature_importance.png")
+    rf_run_dir = rf_exp.finish()
+    print(f"RF run saved to: {rf_run_dir}")
+
     # --- CNN ---
     print("\n[5/6] Training CNN …")
+    cnn_exp = ExperimentLogger(run_name="cnn", config=cfg)
     t0 = time.time()
     cnn_model = CNNClassifier(
         epochs=cfg.cnn_epochs,
@@ -126,18 +141,33 @@ def main() -> None:
     cnn_model.fit(X_train_pp, y_train, X_val=X_test_pp, y_val=y_test)
     cnn_elapsed = time.time() - t0
 
+    for epoch_idx, train_loss in enumerate(cnn_model.train_losses):
+        cnn_exp.log_epoch(
+            epoch_idx + 1,
+            train_loss=train_loss,
+            extra={"train_acc": cnn_model.train_accs[epoch_idx]},
+        )
+
     cnn_preds = cnn_model.predict(X_test_pp)
-    cnn_acc = accuracy_score(y_test, cnn_preds)
-    cnn_f1 = f1_score(y_test, cnn_preds, average="weighted")
-    confusion_matrices["CNN"] = confusion_matrix(y_test, cnn_preds)
+    cnn_metrics = _eval_metrics(y_test, cnn_preds)
+    cnn_acc = cnn_metrics["accuracy"]
+    cnn_f1 = float(f1_score(y_test, cnn_preds, average="weighted"))
+    confusion_matrices["CNN"] = np.array(cnn_metrics["confusion_matrix"])
     results["CNN"] = {"accuracy": cnn_acc, "f1": cnn_f1, "time_s": cnn_elapsed}
     training_histories["CNN"] = {"loss": cnn_model.train_losses, "acc": cnn_model.train_accs}
 
     torch.save(cnn_model.model.state_dict(), cfg.output_dir / "cnn_best.pt")
     print(f"      CNN done in {cnn_elapsed:.1f}s — acc={cnn_acc:.4f}  f1={cnn_f1:.4f}")
 
+    cnn_exp.log_final_metrics(cnn_metrics)
+    cnn_exp.log_artefact("outputs/cnn_best.pt")
+    cnn_exp.log_artefact("outputs/plots/confusion_matrices.png")
+    cnn_run_dir = cnn_exp.finish()
+    print(f"CNN run saved to: {cnn_run_dir}")
+
     # --- LSTM ---
     print("\n[6/6] Training LSTM …")
+    lstm_exp = ExperimentLogger(run_name="lstm", config=cfg)
     t0 = time.time()
     lstm_model = LSTMClassifier(
         epochs=cfg.lstm_epochs,
@@ -147,15 +177,29 @@ def main() -> None:
     lstm_model.fit(X_train_pp, y_train, X_val=X_test_pp, y_val=y_test)
     lstm_elapsed = time.time() - t0
 
+    for epoch_idx, train_loss in enumerate(lstm_model.train_losses):
+        lstm_exp.log_epoch(
+            epoch_idx + 1,
+            train_loss=train_loss,
+            extra={"train_acc": lstm_model.train_accs[epoch_idx]},
+        )
+
     lstm_preds = lstm_model.predict(X_test_pp)
-    lstm_acc = accuracy_score(y_test, lstm_preds)
-    lstm_f1 = f1_score(y_test, lstm_preds, average="weighted")
-    confusion_matrices["LSTM"] = confusion_matrix(y_test, lstm_preds)
+    lstm_metrics = _eval_metrics(y_test, lstm_preds)
+    lstm_acc = lstm_metrics["accuracy"]
+    lstm_f1 = float(f1_score(y_test, lstm_preds, average="weighted"))
+    confusion_matrices["LSTM"] = np.array(lstm_metrics["confusion_matrix"])
     results["LSTM"] = {"accuracy": lstm_acc, "f1": lstm_f1, "time_s": lstm_elapsed}
     training_histories["LSTM"] = {"loss": lstm_model.train_losses, "acc": lstm_model.train_accs}
 
     torch.save(lstm_model.model.state_dict(), cfg.output_dir / "lstm_best.pt")
     print(f"      LSTM done in {lstm_elapsed:.1f}s — acc={lstm_acc:.4f}  f1={lstm_f1:.4f}")
+
+    lstm_exp.log_final_metrics(lstm_metrics)
+    lstm_exp.log_artefact("outputs/lstm_best.pt")
+    lstm_exp.log_artefact("outputs/plots/training_curves.png")
+    lstm_run_dir = lstm_exp.finish()
+    print(f"LSTM run saved to: {lstm_run_dir}")
 
     # ------------------------------------------------------------------
     # 6. Save full pipelines, plots, and results table
