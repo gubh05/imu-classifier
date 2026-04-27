@@ -9,6 +9,8 @@ jobs:
         with:
           environment-file: environment.yml
           activate-environment: IOTIS-P
+          python-version: "3.11"
+          auto-activate-base: false
       - name: Run tests
         shell: bash -l {0}
         run: pytest tests/ -v
